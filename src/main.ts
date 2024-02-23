@@ -4,13 +4,17 @@ import "./main.css";
 
 const POINTS_COUNT = 5000;
 const LERP_SPEED = 0.5;
-const WEIGHT_MULTIPLIER = 4;
+const WEIGHT_MULTIPLIER = 5;
+
+type Vector = {
+  x: number;
+  y: number;
+};
 
 const $canvas = document.querySelector<HTMLCanvasElement>("#canvas")!;
-const $buffer = document.createElement("canvas");
+const $video = document.createElement("video")!;
 
 const context = $canvas.getContext("2d")!;
-const bufferContext = $buffer.getContext("2d", { willReadFrequently: true })!;
 
 context.imageSmoothingEnabled = false;
 
@@ -23,13 +27,11 @@ const getLuminosityFromBuffer = (
   width: number,
 ) => {
   const index = (y * width + x) * 4;
-  const [r, g, b] = buffer.slice(index, index + 3);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-};
-
-type Vector = {
-  x: number;
-  y: number;
+  return (
+    0.2126 * buffer[index] +
+    0.7152 * buffer[index + 1] +
+    0.0722 * buffer[index + 2]
+  );
 };
 
 const calculateDelaunay = (points: Vector[]) => {
@@ -41,49 +43,68 @@ const calculateDelaunay = (points: Vector[]) => {
   return new d3.Delaunay<number>(pointsArray);
 };
 
-const image = new Image();
-image.addEventListener("load", () => {
+const main = async ($canvas: HTMLCanvasElement, $video: HTMLVideoElement) => {
+  const context = $canvas.getContext("2d")!;
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { noiseSuppression: true },
+    audio: false,
+  });
+  $video.srcObject = stream;
+
+  $video.addEventListener("loadedmetadata", (_: Event) => {
+    $canvas.width = $video.videoWidth;
+    $canvas.height = $video.videoHeight;
+
+    $video.play();
+    $video.requestVideoFrameCallback(frame);
+  });
+
   let delaunay: d3.Delaunay<number> | null = null;
   let voronoi: d3.Voronoi<number> | null = null;
   let points: Vector[] = [];
 
-  $canvas.width = image.width;
-  $canvas.height = image.height;
-  $buffer.width = $canvas.width;
-  $buffer.height = $canvas.height;
-
   context.fillStyle = "red";
 
-  bufferContext.drawImage(image, 0, 0);
-
-  const imageDataBuffer = bufferContext.getImageData(
-    0,
-    0,
-    $canvas.width,
-    $canvas.height,
-  ).data;
-
-  for (let i = 0; i < POINTS_COUNT; i++) {
-    const x = randomInt($canvas.width);
-    const y = randomInt($canvas.height);
-    const luminosity = getLuminosityFromBuffer(
-      imageDataBuffer,
-      x,
-      y,
-      $canvas.width,
-    );
-
-    if (randomInt(100) > luminosity) {
-      points.push({ x, y });
-    } else {
-      i--;
-    }
-  }
-
-  delaunay = calculateDelaunay(points);
-  voronoi = delaunay.voronoi([0, 0, $canvas.width, $canvas.height])!;
+  let currentFrame = -1;
 
   const frame = () => {
+    currentFrame++;
+
+    context.save();
+    context.translate($video.videoWidth, 0);
+    context.scale(-1, 1);
+    context.drawImage($video, 0, 0, $video.videoWidth, $video.videoHeight);
+    context.restore();
+
+    const imageDataBuffer = context.getImageData(
+      0,
+      0,
+      $canvas.width,
+      $canvas.height,
+    ).data;
+
+    if (currentFrame === 0) {
+      for (let i = 0; i < POINTS_COUNT; i++) {
+        const x = randomInt($canvas.width);
+        const y = randomInt($canvas.height);
+        const luminosity = getLuminosityFromBuffer(
+          imageDataBuffer,
+          x,
+          y,
+          $canvas.width,
+        );
+
+        if (randomInt(100) > luminosity) {
+          points.push({ x, y });
+        } else {
+          i--;
+        }
+      }
+      delaunay = calculateDelaunay(points);
+      voronoi = delaunay.voronoi([0, 0, $canvas.width, $canvas.height])!;
+    }
+
     const feedback = recalculate(imageDataBuffer, delaunay!, voronoi!, points);
 
     delaunay = feedback.delaunay;
@@ -98,17 +119,16 @@ image.addEventListener("load", () => {
         vector.x,
         vector.y,
         feedback.weights[idx] * WEIGHT_MULTIPLIER,
+        // 1.5,
         0,
         Math.PI * 2,
       );
       context.fill();
     }
 
-    requestAnimationFrame(frame);
+    $video.requestVideoFrameCallback(frame);
   };
-
-  requestAnimationFrame(frame);
-});
+};
 
 const lerpPoint = (a: Vector, b: Vector, t: number): Vector => ({
   x: a.x + (b.x - a.x) * t,
@@ -147,7 +167,7 @@ const recalculate = (
         $canvas.width,
       );
 
-      const weight = 1 - luminosity / 255;
+      const weight = Math.pow(1 - luminosity / 255, 2);
 
       delaunayIndex = delaunay.find(x, y, delaunayIndex);
       centroids[delaunayIndex].x += x * weight;
@@ -180,4 +200,4 @@ const recalculate = (
   };
 };
 
-image.src = "/example.jpeg";
+main($canvas, $video);
